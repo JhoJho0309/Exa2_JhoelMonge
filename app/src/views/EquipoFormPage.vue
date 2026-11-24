@@ -71,7 +71,7 @@
 import { reactive, ref } from 'vue';
 import {
   IonPage, IonHeader, IonToolbar, IonButtons, IonBackButton, IonTitle, IonContent, IonList, IonItem,
-  IonInput, IonSelect, IonSelectOption, IonLabel, IonButton,
+  IonInput, IonSelect, IonSelectOption, IonButton,
   loadingController, onIonViewWillEnter, useIonRouter,
 } from '@ionic/vue';
 import { actualizar, categorias, crear, obtener, type Categoria, type DatosEquipo, type Estado } from '@/services/equipos';
@@ -87,39 +87,96 @@ const ionRouter = useIonRouter();
 const { conectado } = useConexion();
 const hoy = new Date().toISOString().slice(0, 10);
 
-const vacio = (): DatosEquipo => ({
+const datos = reactive<DatosEquipo>({
   codigo: '', nombre: '', categoria_id: null, estado: 'disponible', fecha_adquisicion: hoy, costo_interno: null,
 });
-
-const datos = reactive<DatosEquipo>(vacio());
 const listaCategorias = ref<Categoria[]>([]);
 const estadoActual = ref<Estado>('disponible');
 const errores = ref<Record<string, string>>({});
 
-/**
- * TODO [M5] Al entrar a la página:
- *  - Cargar las categorías para el ion-select (categorias()).
- *  - Nuevo: dejar el formulario vacío con vacio().
- *  - Edición: obtener(id) y llenar datos. Guarde el estado actual en estadoActual.
- *    costo_interno queda en null: la API no lo devuelve (EquipoResource lo oculta).
- *  - 404 → toast y volver a /tabs/equipos.
- */
 onIonViewWillEnter(async () => {
   errores.value = {};
-  void [categorias, obtener, listaCategorias, estadoActual, ionRouter];
+  try {
+    listaCategorias.value = await categorias();
+
+    if (!id) {
+      Object.assign(datos, {
+        codigo: '',
+        nombre: '',
+        categoria_id: null,
+        estado: 'disponible',
+        fecha_adquisicion: hoy,
+        costo_interno: null,
+      });
+      estadoActual.value = 'disponible';
+    } else {
+      const equipo = await obtener(Number(id));
+      Object.assign(datos, equipo, { costo_interno: null });
+      estadoActual.value = equipo.estado;
+    }
+  } catch (error) {
+    const e = error as ErrorApi;
+    if (e.status === 404) {
+      mostrarToast('Equipo no encontrado.', 'warning');
+      ionRouter.replace('/tabs/equipos');
+    } else {
+      mostrarToast('Error al cargar datos.', 'danger');
+    }
+  }
 });
 
-/**
- * TODO [M5] guardar()
- *  1. Mostrar loadingController ("Guardando…") y cerrarlo SIEMPRE, salga bien o mal.
- *  2. Enviar el cuerpo con código en mayúscula y sin espacios sobrantes, y costo_interno como número.
- *     Si el equipo está prestado, no envíe el campo estado.
- *  3. Nuevo → crear(); edición → actualizar(id).
- *  4. Éxito: vibrar() [M7], toast y volver a la lista con useIonRouter (back si se puede).
- *  5. 422 → mostrar el primer mensaje de cada campo debajo de su campo (error.erroresPorCampo).
- *     404 → toast "El equipo ya no existe."   ·   otros → toast genérico.
- */
 async function guardar() {
-  void [loadingController, actualizar, crear, ErrorApi, mostrarToast, vibrar];
+  const loading = await loadingController.create({ message: 'Guardando…' });
+  await loading.present();
+
+  errores.value = {};
+
+  try {
+    const cuerpo: DatosEquipo = {
+      codigo: datos.codigo.trim().toUpperCase(),
+      nombre: datos.nombre,
+      categoria_id: datos.categoria_id,
+      fecha_adquisicion: datos.fecha_adquisicion,
+      costo_interno: Number(datos.costo_interno),
+      ...(estadoActual.value !== 'prestado' && { estado: datos.estado }),
+    };
+
+    if (!id) {
+      await crear(cuerpo);
+    } else {
+      await actualizar(Number(id), cuerpo);
+    }
+
+    vibrar();
+    mostrarToast('Guardado exitoso.', 'success');
+
+    if (!ionRouter.canGoBack()) {
+      ionRouter.push('/tabs/equipos');
+    } else {
+      ionRouter.back();
+    }
+  } catch (error) {
+    const e = error as ErrorApi;
+    if (e.status === 422 && e.cuerpo?.errors) {
+      for (const campo in e.cuerpo.errors) {
+        errores.value[campo] = e.cuerpo.errors[campo][0];
+      }
+    } else if (e.status === 404) {
+      mostrarToast('El equipo ya no existe.', 'warning');
+    } else {
+      mostrarToast('Error inesperado al guardar.', 'danger');
+    }
+  } finally {
+    loading.dismiss();
+  }
 }
+
 </script>
+
+<style scoped>
+.error-campo {
+  color: var(--ion-color-danger);
+  font-size: 0.8rem;
+  margin-left: 12px;
+}
+</style>

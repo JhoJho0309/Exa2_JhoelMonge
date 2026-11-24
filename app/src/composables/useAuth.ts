@@ -16,51 +16,72 @@ let tokenCargado = false;
 /** YA IMPLEMENTADO — lo usa services/api.ts para armar el encabezado Authorization. */
 export const obtenerToken = () => token.value;
 
-/**
- * TODO [M2] Sesión segura (10 pts en total para este archivo).
- *
- * El token y el usuario se guardan con SecureStorage (@aparajita/capacitor-secure-storage):
- * Keystore en Android, Keychain en iOS.  NO use localStorage ni @capacitor/preferences.
- *   await SecureStorage.set(clave, valor)   ·   await SecureStorage.get(clave)   ·   await SecureStorage.remove(clave)
- */
-
-/** TODO [M2] Borrar token y usuario de la memoria (refs) y del almacenamiento cifrado. */
+/** Borrar token y usuario de la memoria (refs) y del almacenamiento cifrado. */
 export async function olvidarSesion() {
-  // TODO [M2]
+  token.value = null;
+  usuario.value = null;
+  await SecureStorage.remove(CLAVE_TOKEN);
+  await SecureStorage.remove(CLAVE_USUARIO);
 }
 
 export function useAuth() {
   const estaAutenticado = computed(() => token.value !== null);
 
-  /**
-   * TODO [M2] login(email, password)
-   *  1. device_name = `${plataforma} ${modelo}` usando Device.getInfo() (máx. 60 caracteres).
-   *  2. POST /login con { email, password, device_name } usando api().
-   *     Respuesta 200: { token: "1|abc...", usuario: { id, nombre } }   ·   Error: 422 con errors.email
-   *  3. Guardar token y usuario en los refs y en SecureStorage.
-   *  No atrape el error: LoginPage.vue ya muestra los 422.
-   */
+  /** login con email y password */
   async function login(email: string, password: string) {
-    void [email, password, api, Device, SecureStorage, CLAVE_TOKEN, CLAVE_USUARIO];
-    throw new Error('TODO [M2] login sin implementar');
+    // Obtener info del dispositivo
+    const info = await Device.getInfo();
+    const plataforma = info.platform ?? 'unknown';
+    const modelo = (info.model ?? 'unknown').slice(0, 60);
+    const device_name = `${plataforma} ${modelo}`.slice(0, 60);
+
+    // Solicitar inicio de sesión a la API
+    const respuesta = await api<{
+      token: string;
+      usuario: Usuario;
+    }>('/login', {
+      method: 'POST',
+      body: { email, password, device_name },
+    });
+
+    // Guardar token y usuario en memoria
+    token.value = respuesta.token;
+    usuario.value = respuesta.usuario;
+
+    // Guardar en almacenamiento seguro
+    await SecureStorage.set(CLAVE_TOKEN, respuesta.token);
+    await SecureStorage.set(CLAVE_USUARIO, JSON.stringify(respuesta.usuario));
   }
 
-  /**
-   * TODO [M2] cargarToken()
-   *  Al abrir la app, recupera token y usuario de SecureStorage y los pone en los refs.
-   *  Debe ejecutarse una sola vez (use la bandera tokenCargado).
-   */
+  /** cargar token y usuario de almacenamiento seguro, una sola vez */
   async function cargarToken() {
-    void tokenCargado;
+    if (tokenCargado) return;
+    tokenCargado = true;
+
+    const t = await SecureStorage.get(CLAVE_TOKEN);
+    const u = await SecureStorage.get(CLAVE_USUARIO);
+
+    if (t) token.value = t;
+    if (u) {
+      try {
+        usuario.value = JSON.parse(u);
+      } catch {
+        usuario.value = null;
+      }
+    }
   }
 
-  /**
-   * TODO [M2] cerrarSesion()
-   *  POST /logout para revocar el token en el servidor y SIEMPRE borrar la sesión local,
-   *  aunque la API falle (sin red o token vencido).
-   */
+  /** cerrar sesión: revocar en API y borrar localmente siempre */
   async function cerrarSesion() {
-    // TODO [M2]
+    try {
+      if (token.value) {
+        await api('/logout', { method: 'POST' });
+      }
+    } catch {
+      // Ignorar errores para siempre borrar local
+    } finally {
+      await olvidarSesion();
+    }
   }
 
   return { usuario, estaAutenticado, login, cargarToken, cerrarSesion };
