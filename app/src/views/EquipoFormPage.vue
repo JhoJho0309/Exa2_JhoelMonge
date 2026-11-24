@@ -71,7 +71,7 @@
 import { reactive, ref } from 'vue';
 import {
   IonPage, IonHeader, IonToolbar, IonButtons, IonBackButton, IonTitle, IonContent, IonList, IonItem,
-  IonInput, IonSelect, IonSelectOption, IonButton,
+  IonInput, IonSelect, IonSelectOption, IonButton, IonLabel,
   loadingController, onIonViewWillEnter, useIonRouter,
 } from '@ionic/vue';
 import { actualizar, categorias, crear, obtener, type Categoria, type DatosEquipo, type Estado } from '@/services/equipos';
@@ -111,7 +111,17 @@ onIonViewWillEnter(async () => {
       estadoActual.value = 'disponible';
     } else {
       const equipo = await obtener(Number(id));
-      Object.assign(datos, equipo, { costo_interno: null });
+
+      // La API devuelve `categoria: { id, nombre }`, no `categoria_id`:
+      // se copian los campos de forma explícita para que el select quede seleccionado.
+      Object.assign(datos, {
+        codigo: equipo.codigo,
+        nombre: equipo.nombre,
+        categoria_id: equipo.categoria?.id ?? null,
+        estado: equipo.estado === 'prestado' ? 'disponible' : equipo.estado,
+        fecha_adquisicion: equipo.fecha_adquisicion,
+        costo_interno: null, // la API no expone el costo: hay que volver a ingresarlo
+      });
       estadoActual.value = equipo.estado;
     }
   } catch (error) {
@@ -119,11 +129,20 @@ onIonViewWillEnter(async () => {
     if (e.status === 404) {
       mostrarToast('Equipo no encontrado.', 'warning');
       ionRouter.replace('/tabs/equipos');
-    } else {
+    } else if (e.status !== 401) {
       mostrarToast('Error al cargar datos.', 'danger');
     }
   }
 });
+
+// El input type="number" entrega string: vacío debe viajar como null (no como 0)
+// para que la API responda 422 "El costo interno es obligatorio".
+function costoComoNumero(): number | null {
+  const crudo = datos.costo_interno as unknown;
+  if (crudo === null || crudo === undefined || String(crudo).trim() === '') return null;
+  const n = Number(crudo);
+  return Number.isNaN(n) ? null : n;
+}
 
 async function guardar() {
   const loading = await loadingController.create({ message: 'Guardando…' });
@@ -134,10 +153,10 @@ async function guardar() {
   try {
     const cuerpo: DatosEquipo = {
       codigo: datos.codigo.trim().toUpperCase(),
-      nombre: datos.nombre,
+      nombre: datos.nombre.trim(),
       categoria_id: datos.categoria_id,
       fecha_adquisicion: datos.fecha_adquisicion,
-      costo_interno: Number(datos.costo_interno),
+      costo_interno: costoComoNumero(),
       ...(estadoActual.value !== 'prestado' && { estado: datos.estado }),
     };
 
@@ -158,19 +177,16 @@ async function guardar() {
   } catch (error) {
     const e = error as ErrorApi;
     if (e.status === 422 && e.cuerpo?.errors) {
-      for (const campo in e.cuerpo.errors) {
-        errores.value[campo] = e.cuerpo.errors[campo][0];
-      }
+      errores.value = e.erroresPorCampo;
     } else if (e.status === 404) {
       mostrarToast('El equipo ya no existe.', 'warning');
-    } else {
+    } else if (e.status !== 401) {
       mostrarToast('Error inesperado al guardar.', 'danger');
     }
   } finally {
     loading.dismiss();
   }
 }
-
 </script>
 
 <style scoped>
